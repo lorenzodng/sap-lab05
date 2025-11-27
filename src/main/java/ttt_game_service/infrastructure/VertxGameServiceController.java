@@ -14,287 +14,211 @@ import io.vertx.ext.web.handler.StaticHandler;
 import ttt_game_service.application.AccountAlreadyPresentException;
 import ttt_game_service.application.GameAlreadyPresentException;
 import ttt_game_service.application.GameService;
-import ttt_game_service.application.GameServiceImpl;
-import ttt_game_service.application.GameSessionEvent;
-import ttt_game_service.application.PlayerSessionEventObserver;
 import ttt_game_service.application.LoginFailedException;
 import ttt_game_service.domain.InvalidJoinException;
 import ttt_game_service.domain.InvalidMoveException;
 import ttt_game_service.domain.TTTSymbol;
 
-/**
-*
-* TicTacToe Game Service controller
-* 
-* Remark: the API is HTTP, not REST
-* 
-* @author aricci
-*
-*/
+/*
+controller di backend (intermediario client <-> servizio principale):
+client -> controller che utilizza un server -> servizio principale
+ */
 public class VertxGameServiceController extends VerticleBase  {
 
-	private int port;
+	private int port; //porta su cui il server ascolta le richieste http
 	static Logger logger = Logger.getLogger("[TicTacToe Backend]");
-
-	/* Ref. to the application layer */
-	private GameService gameService;
+	private GameService gameService; //servizio principale
 	
 	public VertxGameServiceController(GameService service, int port) {
 		this.port = port;
 		logger.setLevel(Level.INFO);
 		this.gameService = service;
-
 	}
 
+	//avvia il server (eseguito automaticamente alla chiamata "vertx.deployVerticle(server)")
 	public Future<?> start() {
 		logger.log(Level.INFO, "TTT Game Service initializing...");
-		HttpServer server = vertx.createHttpServer();
+		HttpServer server = vertx.createHttpServer(); //crea un'istanza del server http
+		
+		Router router = Router.router(vertx); //crea una rotta che gestisce le richiesta http
+		router.route(HttpMethod.POST, "/api/registerUser").handler(this::registerUser); //rotta per registrare un nuovo utente
+		router.route(HttpMethod.POST, "/api/login").handler(this::login); //rotta per il login di un utente
+		router.route(HttpMethod.POST, "/api/createGame").handler(this::createNewGame); //rotta per creare una nuova partita
+		router.route(HttpMethod.POST, "/api/joinGame").handler(this::joinGame); //rotta per far entrare l'utente in una partita
+		router.route(HttpMethod.POST, "/api/makeAMove").handler(this::makeAMove); //rotta per eseguire una mossa
+		this.handleEventSubscription(server); //registra un websocket handler al server per ascoltare le richieste del client
 
-		/* API routes */
-		
-		/* Note: This API is not RESTful */
-		
-		Router router = Router.router(vertx);
-		router.route(HttpMethod.POST, "/api/registerUser").handler(this::registerUser);
-		router.route(HttpMethod.POST, "/api/login").handler(this::login);
-		router.route(HttpMethod.POST, "/api/createGame").handler(this::createNewGame);
-		router.route(HttpMethod.POST, "/api/joinGame").handler(this::joinGame);
-		router.route(HttpMethod.POST, "/api/makeAMove").handler(this::makeAMove);
-		this.handleEventSubscription(server, "/api/events");
+		router.route("/public/*").handler(StaticHandler.create()); //gestisce le richieste del client che iniziano con "public", relative all'aspetto della pagina web
 
-		/* static files */
-		
-		router.route("/public/*").handler(StaticHandler.create());
-		
-		/* start the server */
-		
-		var fut = server
-			.requestHandler(router)
-			.listen(port);
-		
-		fut.onSuccess(res -> {
-			logger.log(Level.INFO, "TTT Game Service ready - port: " + port);
+		var fut = server.requestHandler(router).listen(port); //avvia il server sulla porta specificata
+		fut.onSuccess(res -> { //in caso di avvio con successo
+			logger.log(Level.INFO, "TTT Game Service ready - port: " + port); //stampa un messaggio di log
 		});
 
-		return fut;
+		return fut; //restituisce la future
 	}
 
-
-	/* List of handlers mapping the API */
-	
-	/**
-	 * 
-	 * Register a new user
-	 * 
-	 * @param context
-	 */
-	protected void registerUser(RoutingContext context) {
+	//registra un nuovo utente
+	protected void registerUser(RoutingContext context) { //context è l'oggetto che rappresenta la richiesta http
 		logger.log(Level.INFO, "RegisterUser request");
-		context.request().handler(buf -> {
-			JsonObject userInfo = buf.toJsonObject();
+		context.request().handler(buf -> { //prende il body del messaggio http inviato dal client
+			JsonObject userInfo = buf.toJsonObject(); //converte il body in un oggetto json
 			logger.log(Level.INFO, "Payload: " + userInfo);
-			var userName = userInfo.getString("userName");
-			var password = userInfo.getString("password");
-			var reply = new JsonObject();
+			var userName = userInfo.getString("userName"); //estrae il valore del campo "userName"
+			var password = userInfo.getString("password"); //estrae il valore del campo "password"
+			var reply = new JsonObject(); //crea un oggetto json di risposta al client
 			try {
-				gameService.registerUser(userName, password);
-				reply.put("result", "ok");
-				sendReply(context.response(), reply);
+				gameService.registerUser(userName, password); //registra l'utente nel db
+				reply.put("result", "ok"); //popola l'oggetto con un'informazione di successo
+				sendReply(context.response(), reply); //invia la risposta al client
 			} catch (AccountAlreadyPresentException ex) {
-				reply.put("result", "error");
-				reply.put("error", ex.getMessage());
-				sendReply(context.response(), reply);
+				reply.put("result", "error"); //popola l'oggetto con un'informazione di errore
+				reply.put("error", ex.getMessage()); //popola l'oggetto con la specifica dell'errore
+				sendReply(context.response(), reply); //invia la risposta al client
 			} catch (Exception ex1) {
-				sendError(context.response());
+				sendError(context.response()); //invia un errore al client
 			}
 		});
 	}
 
-	/**
-	 * 
-	 * Login a user
-	 * 
-	 * It creates a User Session
-	 * 
-	 * @param context
-	 */
+	//esegue il login di un utente
 	protected void login(RoutingContext context) {
 		logger.log(Level.INFO, "Login request");
-		context.request().handler(buf -> {
-			JsonObject userInfo = buf.toJsonObject();
+		context.request().handler(buf -> { //prende il body del messaggio http inviato dal client
+			JsonObject userInfo = buf.toJsonObject(); //converte il body in un oggetto json
 			logger.log(Level.INFO, "Payload: " + userInfo);
-			var userName = userInfo.getString("userName");
-			var password = userInfo.getString("password");
-			var reply = new JsonObject();
+			var userName = userInfo.getString("userName"); //estrae il valore del campo "userName"
+			var password = userInfo.getString("password"); //estrae il valore del campo "password"
+			var reply = new JsonObject(); //crea un oggetto json di risposta al client
 			try {
-				var session = gameService.login(userName, password);
-				reply.put("result", "ok");
-				reply.put("sessionId", session.getSessionId());
-				sendReply(context.response(), reply);
+				var session = gameService.login(userName, password); //esegue il login dell'utente
+				reply.put("result", "ok"); //popola l'oggetto con un'informazione di successo
+				reply.put("sessionId", session.getSessionId()); //popola l'oggetto con l'informazione della sessione utente creata con il login
+				sendReply(context.response(), reply); //invia la risposta al client
 			} catch (LoginFailedException ex) {
-				reply.put("result", "login-failed");
-				reply.put("error", ex.getMessage());
-				sendReply(context.response(), reply);
+				reply.put("result", "login-failed"); //popola l'oggetto con un'informazione di errore
+				reply.put("error", ex.getMessage()); //popola l'oggetto con la specifica dell'errore
+				sendReply(context.response(), reply); //invia la risposta al client
 			} catch (Exception ex1) {
-				sendError(context.response());
+				sendError(context.response()); //invia un errore al client
 			}			
 		});
 	}
-	
-	
-	/**
-	 * 
-	 * Create a New Game - by users logged in (with a UserSession)
-	 * 
-	 * @param context
-	 */
+
+	//crea una nuova partita
 	protected void createNewGame(RoutingContext context) {
 		logger.log(Level.INFO, "CreateNewGame request - " + context.currentRoute().getPath());
-		context.request().handler(buf -> {
-			JsonObject userInfo = buf.toJsonObject();
+		context.request().handler(buf -> { //prende il body del messaggio http inviato dal client
+			JsonObject userInfo = buf.toJsonObject(); //converte il body in un oggetto json
 			logger.log(Level.INFO, "Payload: " + userInfo);
-			var sessionId = userInfo.getString("sessionId");
-			var reply = new JsonObject();
+			var sessionId = userInfo.getString("sessionId"); //estrae il valore del campo "sessionId"
+			var reply = new JsonObject(); //crea un oggetto json di risposta al client
 			try {
-				var session = gameService.getUserSession(sessionId);
-				var gameId = userInfo.getString("gameId");
-				session.createNewGame(gameId);
-				reply.put("result", "ok");
-				sendReply(context.response(), reply);
+				var session = gameService.getUserSession(sessionId); //recupera la sessione dell'utente
+				var gameId = userInfo.getString("gameId"); //estrae il valore del campo "gameId"
+				session.createNewGame(gameId); //crea una partita
+				reply.put("result", "ok"); //popola l'oggetto con un'informazione di successo
+				sendReply(context.response(), reply); //invia la risposta al client
 			} catch (GameAlreadyPresentException ex) {
-				reply.put("result", "error");
-				reply.put("error", "game-already-present");
-				sendReply(context.response(), reply);
+				reply.put("result", "error"); //popola l'oggetto con un'informazione di errore
+				reply.put("error", "game-already-present"); //popola l'oggetto con la specifica dell'errore
+				sendReply(context.response(), reply); //invia la risposta al client
 			} catch (Exception ex1) {
-				sendError(context.response());
+				sendError(context.response()); //invia un errore al client
 			}			
 		});		
 	}
 
-	/**
-	 * 
-	 * Join a Game - by user logged in (with a UserSession)
-	 * 
-	 * It creates a PlayerSession
-	 * 
-	 * @param context
-	 */
+	//consente a un utente di unirsi a una partita
 	protected void joinGame(RoutingContext context) {
 		logger.log(Level.INFO, "JoinGame request - " + context.currentRoute().getPath());
-		context.request().handler(buf -> {
-			JsonObject joinInfo = buf.toJsonObject();
+		context.request().handler(buf -> { //prende il body del messaggio http inviato dal client
+			JsonObject joinInfo = buf.toJsonObject(); //converte il body in un oggetto json
 			logger.log(Level.INFO, "Join info: " + joinInfo);
-			
-			String sessionId = joinInfo.getString("sessionId");
-			String gameId = joinInfo.getString("gameId");
-			String symbol = joinInfo.getString("symbol");
+			String sessionId = joinInfo.getString("sessionId"); //estrae il valore del campo "sessionId"
+			String gameId = joinInfo.getString("gameId"); //estrae il valore del campo "gameId"
+			String symbol = joinInfo.getString("symbol"); //estrae il valore del campo "symbol"
 
-			var reply = new JsonObject();
+			var reply = new JsonObject(); //crea un oggetto json di risposta al client
 			try {
-				var session = gameService.getUserSession(sessionId);
-				var playerSession = session.joinGame(gameId, symbol.equals("X") ? TTTSymbol.X : TTTSymbol.O, new VertxPlayerSessionEventObserver(vertx.eventBus()));
-				reply.put("playerSessionId", playerSession.getId());
-				reply.put("result", "ok");
+				var session = gameService.getUserSession(sessionId); //recupera la sessione dell'utente
+				var playerSession = session.joinGame(gameId, symbol.equals("X") ? TTTSymbol.X : TTTSymbol.O, new VertxPlayerSessionEventObserver(vertx.eventBus())); //esegue il join dell'utente nella partita
+				reply.put("playerSessionId", playerSession.getId()); //popola l'oggetto con l'informazione della sessione giocatore creata con il join
+				reply.put("result", "ok"); //popola l'oggetto con un'informazione di successo
 				sendReply(context.response(), reply);
 			} catch (InvalidJoinException  ex) {
-				reply.put("result", "error");
-				reply.put("error", ex.getMessage());
-				sendReply(context.response(), reply);
+				reply.put("result", "error"); //popola l'oggetto con un'informazione di errore
+				reply.put("error", ex.getMessage()); //popola l'oggetto con la specifica dell'errore
+				sendReply(context.response(), reply); //invia la risposta al client
 			} catch (Exception ex1) {
-				sendError(context.response());
+				sendError(context.response()); //invia un errore al client
 			}			
 		});
 	}
-	
-	/**
-	 * 
-	 * Make a move in a game - by players playing a game (with a PlayerSession)
-	 * 
-	 * @param context
-	 */
+
+	//esegue una mossa
 	protected void makeAMove(RoutingContext context) {
 		logger.log(Level.INFO, "MakeAMove request - " + context.currentRoute().getPath());
-		context.request().handler(buf -> {
-			var  reply = new JsonObject();
+		context.request().handler(buf -> { //prende il body del messaggio http inviato dal client
+			var reply = new JsonObject(); //crea un oggetto json di risposta al client
 			try {
-				JsonObject moveInfo = buf.toJsonObject();
+				JsonObject moveInfo = buf.toJsonObject(); //converte il body in un oggetto json
 				logger.log(Level.INFO, "move info: " + moveInfo);
-				
-				String playerSessionId = moveInfo.getString("playerSessionId");
-				int x = Integer.parseInt(moveInfo.getString("x"));
-				int y = Integer.parseInt(moveInfo.getString("y"));
-				var ps = gameService.getPlayerSession(playerSessionId);
-				ps.makeMove(x, y);				
-				reply.put("result", "accepted");
-				sendReply(context.response(), reply);
+				String playerSessionId = moveInfo.getString("playerSessionId"); //estrae il valore del campo "playerSessionId"
+				int x = Integer.parseInt(moveInfo.getString("x")); //estrae il valore del campo "x" e lo converte in un intero
+				int y = Integer.parseInt(moveInfo.getString("y")); //estrae il valore del campo "y" e lo converte in un intero
+				var ps = gameService.getPlayerSession(playerSessionId); //recupera la sessione del giocatore
+
+				ps.makeMove(x, y); //fa eseguire al giocatore una mossa
+				reply.put("result", "accepted"); //popola l'oggetto con un'informazione di successo
+				sendReply(context.response(), reply); //invia la risposta al client
 			} catch (InvalidMoveException ex) {
-				reply.put("result", "invalid-move");
-				sendReply(context.response(), reply);				
+				reply.put("result", "invalid-move"); //popola l'oggetto con un'informazione di errore
+				sendReply(context.response(), reply); //invia la risposta al client
 			} catch (Exception ex1) {
-				reply.put("result", ex1.getMessage());
+				reply.put("result", ex1.getMessage()); //popola l'oggetto con la specifica dell'errore
 				try {
-					sendReply(context.response(), reply);
+					sendReply(context.response(), reply); //invia la risposta al client
 				} catch (Exception ex2) {
-					sendError(context.response());
+					sendError(context.response()); //invia un errore al client
 				}				
 			}
 		});
 	}
 
-
-	/* Handling subscribers using web sockets */
-	
-	protected void handleEventSubscription(HttpServer server, String path) {
-		server.webSocketHandler(webSocket -> {
+	//registra un websocket handler al server
+	protected void handleEventSubscription(HttpServer server) {
+		server.webSocketHandler(webSocket -> { //registra un handlder per websocket
 			logger.log(Level.INFO, "New TTT subscription accepted.");
-
-			/* 
-			 * 
-			 * Receiving a first message including the id of the game
-			 * to observe 
-			 * 
-			 */
-			webSocket.textMessageHandler(openMsg -> {
+			webSocket.textMessageHandler(openMsg -> { //imposta un handler per i messaggi ricevuti dal client
 				logger.log(Level.INFO, "For game: " + openMsg);
-				JsonObject obj = new JsonObject(openMsg);
-				String playerSessionId = obj.getString("playerSessionId");
-				
-				
-				/* 
-				 * Subscribing events on the event bus to receive
-				 * events concerning the game, to be notified 
-				 * to the frontend using the websocket
-				 * 
-				 */
-				EventBus eb = vertx.eventBus();
-				
-				eb.consumer(playerSessionId, msg -> {
-					JsonObject ev = (JsonObject) msg.body();
+				JsonObject obj = new JsonObject(openMsg); //converte il messaggio ricevuto dal client in un oggetto json
+				String playerSessionId = obj.getString("playerSessionId"); //estrae il valore del campo "playerSessionId"
+
+				EventBus eb = vertx.eventBus(); //recupera l'event bus di vertx
+				eb.consumer(playerSessionId, msg -> { //iscrive l'event bus all'indirizzo creato e, ogni volta che arriva un messaggio all'event bus...
+					JsonObject ev = (JsonObject) msg.body(); //...lo converte in json
 					logger.log(Level.INFO, "Event: " + ev.encodePrettily());
-					webSocket.writeTextMessage(ev.encodePrettily());
+					webSocket.writeTextMessage(ev.encodePrettily()); //lo invia al client tramite websocket
 				});
 				
-				var ps = gameService.getPlayerSession(playerSessionId);
-				var en = ps.getPlayerSessionEventNotifier();
-				en.enableEventNotification(playerSessionId);
-								
+				var ps = gameService.getPlayerSession(playerSessionId); //recupera la sessione del giocatore corrispondente al servizio principale (ovvero l'utente in prima persona)
+				var en = ps.getPlayerSessionEventNotifier(); //recupera il notificatore di eventi della sessione del giocatore
+				en.enableEventNotification(playerSessionId); //abilita la notifica degli eventi per questa sessione sul bus con l'indirizzo "playerSessionId"
 			});
 		});
 	}
-	
-	/* Aux methods */
-	
 
+	//invia la risposta al client
 	private void sendReply(HttpServerResponse response, JsonObject reply) {
-		response.putHeader("content-type", "application/json");
-		response.end(reply.toString());
+		response.putHeader("content-type", "application/json"); //imposta l’header del messaggio http come json
+		response.end(reply.toString()); //converte l’oggetto json in stringa, lo invia al client e chiude la risposta
 	}
-	
+
+	//invia una risposta di errore al client
 	private void sendError(HttpServerResponse response) {
-		response.setStatusCode(500);
-		response.putHeader("content-type", "application/json");
-		response.end();
+		response.setStatusCode(500);  //imposta lo stato della risposta a 500 (errore)
+		response.putHeader("content-type", "application/json"); //imposta l’header del messaggio http come json
+		response.end(); //chiude la risposta
 	}
-
-
 }

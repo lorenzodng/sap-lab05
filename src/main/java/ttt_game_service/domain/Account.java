@@ -2,14 +2,10 @@ package ttt_game_service.domain;
 
 import ddd.Entity;
 
-/**
- * 
- * Modelling a user account. 
- * 
- */
+//account utente
 public class Account implements Entity<String> {
 	
-	private String userName; /* this is the id */
+	private String userName;
 	private String password;
 	
 	public Account(String userName, String password) {
@@ -23,10 +19,6 @@ public class Account implements Entity<String> {
 
 	public String getPassword() {
 		return password;
-	}
-
-	public void updatePassword(String password) {
-		this.password = password;
 	}
 
 	@Override

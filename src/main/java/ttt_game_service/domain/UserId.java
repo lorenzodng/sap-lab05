@@ -2,6 +2,7 @@ package ttt_game_service.domain;
 
 import ddd.ValueObject;
 
+//record per l'id dell'utente
 public record UserId(String id) implements ValueObject {
 
 	public boolean equals(Object obj) {

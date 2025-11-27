@@ -1,24 +1,23 @@
 package ttt_game_service.application;
 
-import java.util.HashMap;
-
-import ddd.Aggregate;
 import ddd.Repository;
 import exagonal.OutBoundPort;
 import ttt_game_service.domain.Game;
 
-/**
- * 
- * Games Repository
- * 
+/*
+interfaccia che collega l'architettura (applicazione) al db delle partite
+contiene tutti i metodi che l'architettura utilizza per interagire con il db delle partite
  */
 @OutBoundPort
 public interface GameRepository extends Repository {
 
+	//aggiunge una partita
 	void addGame(Game game);
-	
+
+	//verifica se una partita è presente
 	boolean isPresent(String gameId);
-	
+
+	//recupera una partita
 	Game getGame(String gameId);
 
 }
